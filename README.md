@@ -76,3 +76,7 @@ screen; review changes with `cargo insta review`.
 ```sh
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
+
+Source control is [jj](https://jj-vcs.github.io/jj/). After `jj commit`,
+push with `scripts/jj-push [bookmark]` (default `main`): it moves the bookmark
+to the latest commit (`@-`) and pushes it.
