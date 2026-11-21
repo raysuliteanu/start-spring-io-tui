@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 
 use minijinja::{Environment, syntax::SyntaxConfig, value::Serde};
 use serde::Serialize;
@@ -182,7 +183,50 @@ fn environment() -> Environment<'static> {
             include_str!("../templates/settings.gradle.kts.j2"),
         ),
     ];
-    for (name, source) in templates {
+    let sources = [
+        (
+            "Application.java.j2",
+            include_str!("../templates/Application.java.j2"),
+        ),
+        (
+            "Application.kt.j2",
+            include_str!("../templates/Application.kt.j2"),
+        ),
+        (
+            "Application.groovy.j2",
+            include_str!("../templates/Application.groovy.j2"),
+        ),
+        (
+            "ApplicationTests.java.j2",
+            include_str!("../templates/ApplicationTests.java.j2"),
+        ),
+        (
+            "ApplicationTests.kt.j2",
+            include_str!("../templates/ApplicationTests.kt.j2"),
+        ),
+        (
+            "ApplicationTests.groovy.j2",
+            include_str!("../templates/ApplicationTests.groovy.j2"),
+        ),
+        (
+            "ServletInitializer.java.j2",
+            include_str!("../templates/ServletInitializer.java.j2"),
+        ),
+        (
+            "ServletInitializer.kt.j2",
+            include_str!("../templates/ServletInitializer.kt.j2"),
+        ),
+        (
+            "ServletInitializer.groovy.j2",
+            include_str!("../templates/ServletInitializer.groovy.j2"),
+        ),
+        (
+            "application.properties.j2",
+            include_str!("../templates/application.properties.j2"),
+        ),
+        ("gitignore.j2", include_str!("../templates/gitignore.j2")),
+    ];
+    for (name, source) in templates.into_iter().chain(sources) {
         env.add_template(name, source)
             .expect("embedded templates are valid");
     }
@@ -403,6 +447,101 @@ pub fn build_files(
     Ok(Generated { files, warnings })
 }
 
+pub fn generate(
+    req: &ProjectRequest,
+    ptype: &ProjectType,
+    details: &DependencyDetails,
+) -> Result<Generated, OfflineError> {
+    let mut generated = build_files(req, ptype, details)?;
+    if ptype.tags.format != "project" {
+        return Ok(generated);
+    }
+    let ext = match req.language.as_str() {
+        "kotlin" => "kt",
+        "groovy" => "groovy",
+        _ => "java",
+    };
+    let lang_dir = if ext == "kt" {
+        "kotlin"
+    } else {
+        req.language.as_str()
+    };
+    let class_name = application_class_name(&req.name);
+    let pkg_dir = req.package_name.replace('.', "/");
+    let ctx = minijinja::context! {
+        package => &req.package_name,
+        class_name => &class_name,
+        name => &req.name,
+        maven => ptype.tags.build == "maven",
+        kotlin => ext == "kt",
+    };
+    let main = format!("src/main/{lang_dir}/{pkg_dir}");
+    let test = format!("src/test/{lang_dir}/{pkg_dir}");
+    let mut files = vec![
+        (
+            format!("{main}/{class_name}.{ext}"),
+            format!("Application.{ext}.j2"),
+        ),
+        (
+            format!("{test}/{class_name}Tests.{ext}"),
+            format!("ApplicationTests.{ext}.j2"),
+        ),
+        (
+            "src/main/resources/application.properties".into(),
+            "application.properties.j2".into(),
+        ),
+        (".gitignore".into(), "gitignore.j2".into()),
+    ];
+    if req.packaging == "war" {
+        files.push((
+            format!("{main}/ServletInitializer.{ext}"),
+            format!("ServletInitializer.{ext}.j2"),
+        ));
+    }
+    let env = environment();
+    for (path, template) in files {
+        let bytes = env
+            .get_template(&template)
+            .and_then(|t| t.render(&ctx))
+            .map_err(|e| OfflineError::Template(e.to_string()))?;
+        generated.files.push((path, bytes.into_bytes()));
+    }
+    Ok(generated)
+}
+
+/// `"my app"` → `"MyAppApplication"`, as Initializr derives it from the project name.
+pub fn application_class_name(name: &str) -> String {
+    let mut out: String = name
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            chars
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out + "Application"
+}
+
+pub fn to_zip(base_dir: &str, files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (path, bytes) in files {
+        zip.start_file(format!("{base_dir}/{path}"), options)
+            .expect("writing to an in-memory zip cannot fail");
+        zip.write_all(bytes)
+            .expect("writing to an in-memory zip cannot fail");
+    }
+    zip.finish()
+        .expect("writing to an in-memory zip cannot fail")
+        .into_inner()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,5 +717,94 @@ mod tests {
             g.warnings
                 .contains(&"nope: no cached coordinates, skipped".to_string())
         );
+    }
+
+    fn generate_project(r: &ProjectRequest) -> Generated {
+        let m = metadata();
+        let ptype = m.project_type(&r.project_type).expect("known type");
+        generate(r, ptype, &details()).expect("generates")
+    }
+
+    #[test]
+    fn java_project_layout() {
+        let g = generate_project(&request("maven-project", "java", "jar", &[]));
+        let p = paths(&g);
+        for expected in [
+            "pom.xml",
+            "src/main/java/com/example/demo/DemoApplication.java",
+            "src/test/java/com/example/demo/DemoApplicationTests.java",
+            "src/main/resources/application.properties",
+            ".gitignore",
+        ] {
+            assert!(p.contains(&expected), "{expected} missing from {p:?}");
+        }
+        assert_eq!(
+            file(&g, "src/main/resources/application.properties"),
+            "spring.application.name=demo\n"
+        );
+        insta::assert_snapshot!(file(
+            &g,
+            "src/main/java/com/example/demo/DemoApplication.java"
+        ));
+    }
+
+    #[test]
+    fn kotlin_war_has_servlet_initializer() {
+        let g = generate_project(&request("gradle-project-kotlin", "kotlin", "war", &[]));
+        insta::assert_snapshot!(file(
+            &g,
+            "src/main/kotlin/com/example/demo/ServletInitializer.kt"
+        ));
+        insta::assert_snapshot!(file(
+            &g,
+            "src/main/kotlin/com/example/demo/DemoApplication.kt"
+        ));
+    }
+
+    #[test]
+    fn groovy_sources() {
+        let g = generate_project(&request("gradle-project", "groovy", "war", &[]));
+        insta::assert_snapshot!(file(
+            &g,
+            "src/main/groovy/com/example/demo/DemoApplication.groovy"
+        ));
+        insta::assert_snapshot!(file(
+            &g,
+            "src/test/groovy/com/example/demo/DemoApplicationTests.groovy"
+        ));
+        insta::assert_snapshot!(file(
+            &g,
+            "src/main/groovy/com/example/demo/ServletInitializer.groovy"
+        ));
+    }
+
+    #[test]
+    fn build_only_has_no_sources() {
+        let g = generate_project(&request("maven-build", "java", "jar", &[]));
+        assert_eq!(paths(&g), ["pom.xml"]);
+    }
+
+    #[test]
+    fn class_name() {
+        assert_eq!(application_class_name("demo"), "DemoApplication");
+        assert_eq!(application_class_name("my app"), "MyAppApplication");
+        assert_eq!(application_class_name(""), "Application");
+    }
+
+    #[test]
+    fn zip_has_base_dir() {
+        let g = generate_project(&request("maven-project", "java", "jar", &[]));
+        let bytes = to_zip("demo", &g.files);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
+        assert_eq!(zip.len(), g.files.len());
+        for i in 0..zip.len() {
+            let name = zip
+                .by_index(i)
+                .expect("entry")
+                .name()
+                .expect("utf8 name")
+                .to_string();
+            assert!(name.starts_with("demo/"), "{name}");
+        }
     }
 }

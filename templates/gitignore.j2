@@ -1,0 +1,58 @@
+HELP.md
+{% if maven %}
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+{% else %}
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+{% endif %}
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+{% if not maven %}
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+{% endif %}
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+{% if not maven %}
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+{% endif %}
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+{% if maven %}
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+{% endif %}
+
+### VS Code ###
+.vscode/
+{% if kotlin %}
+
+### Kotlin ###
+.kotlin
+{% endif %}
