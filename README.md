@@ -24,16 +24,20 @@ The status bar always shows the mode: `ONLINE`, `OFFLINE` (you passed
 | Key | Action |
 |---|---|
 | `Tab` | switch between the Project and Dependencies panes |
-| `↑` `↓` | move between fields / dependencies |
+| `↑` `↓` | move between fields / selected dependencies |
 | `←` `→` | change a choice (project type, language, Boot, Java, packaging) |
 | `Enter` | edit a text field (Enter or Esc to finish) |
-| `/` | fuzzy-search dependencies by name, id or category (Esc clears) |
-| `Space` | select / deselect the dependency under the cursor |
+| `a` (or `/`, or Enter on the Dependencies pane) | open the Add dependencies dialog |
+| `d`, `Delete` | remove the highlighted dependency |
 | `X` | clear all selected dependencies |
 | `g` | generate |
 | `r` | retry the connection (after an automatic fall back to offline) |
 | `?` | about (version, commit, build date, rustc) |
 | `q`, `Ctrl-C` | quit |
+
+In the Add dependencies dialog, typing fuzzy-searches by name, id or
+category, `↑` `↓` move, `Space` selects or deselects, `Enter` keeps the
+changes and `Esc` discards them.
 
 ### Output
 

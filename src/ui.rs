@@ -10,7 +10,10 @@ use crate::app::{App, FIELDS, Field, Mode, Pane};
 use crate::cli::version_info;
 use crate::model::Metadata;
 
-const HELP: &str = "Tab pane · ↑↓ move · ←→ choose · Enter edit · / search · Space toggle · X clear · g generate · ? about · q quit";
+const HELP: &str = "Tab pane · ↑↓ move · ←→ choose · Enter edit · a add · d remove · X clear · g generate · ? about · q quit";
+const SELECTED: Color = Color::LightBlue;
+const WELL: Color = Color::DarkGray;
+const LABEL_WIDTH: usize = 13;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] =
@@ -35,7 +38,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(main);
     draw_project(frame, app, metadata, left);
-    draw_dependencies(frame, app, right);
+    draw_selected(frame, app, right);
+    if app.picker.is_some() {
+        draw_picker(frame, app, main);
+    }
     if app.show_about {
         draw_about(frame, main);
     }
@@ -73,6 +79,8 @@ fn find_name(values: &[crate::model::Choice], id: &str) -> Option<String> {
 
 fn draw_project(frame: &mut Frame, app: &App, metadata: &Metadata, area: Rect) {
     let offline = matches!(app.mode, Mode::Offline { .. });
+    // Inside the borders, after the label column, minus the two well edges.
+    let well_width = (area.width as usize).saturating_sub(2 + LABEL_WIDTH + 2);
     let lines: Vec<Line> = FIELDS
         .iter()
         .map(|&field| {
@@ -103,17 +111,26 @@ fn draw_project(frame: &mut Frame, app: &App, metadata: &Metadata, area: Rect) {
                 }
                 format!("◂ {name} ▸")
             };
-            let style = if selected {
-                Style::new().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::new()
-            };
+            let label = Span::styled(
+                format!("{:<LABEL_WIDTH$}", field.label()),
+                Style::new().fg(Color::Cyan),
+            );
+            let mut style = Style::new();
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            if !field.is_text() {
+                return Line::from(vec![label, Span::styled(value, style)]);
+            }
+            // Text fields sit in a shaded "well" so empty ones are still visible.
+            let value: String = value.chars().take(well_width).collect();
+            let padded = format!("{value:<well_width$}");
+            let edge = Style::new().fg(WELL);
             Line::from(vec![
-                Span::styled(
-                    format!("{:<13}", field.label()),
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::styled(value, style),
+                label,
+                Span::styled("▕", edge),
+                Span::styled(padded, style.bg(WELL)),
+                Span::styled("▏", edge),
             ])
         })
         .collect();
@@ -123,72 +140,136 @@ fn draw_project(frame: &mut Frame, app: &App, metadata: &Metadata, area: Rect) {
     );
 }
 
-fn draw_dependencies(frame: &mut Frame, app: &App, area: Rect) {
-    let filter = app.picker.as_ref().map_or("", |p| p.filter.as_str());
-    let cursor_index = app.picker.as_ref().map_or(0, |p| p.cursor);
-    let title = if app.picker.is_some() {
-        format!(" Search: {filter}▏ ")
-    } else {
-        " Dependencies (/ to search) ".into()
-    };
-    let block = focused_block(title, app.pane == Pane::Dependencies);
+/// Cuts `text` to `width` characters, ending with `…` when shortened.
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn draw_selected(frame: &mut Frame, app: &App, area: Rect) {
+    let selected = app.selected_dependencies();
+    let title = format!(" Dependencies ({}) · a: add ", selected.len());
+    let focused = app.pane == Pane::Dependencies;
+    let block = focused_block(title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [list_area, selected_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    if selected.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No dependencies — press a to add").style(Style::new().fg(WELL)),
+            inner,
+        );
+        return;
+    }
+    let width = inner.width as usize;
+    let items: Vec<ListItem> = selected
+        .iter()
+        .map(|(group, dep)| {
+            let tail = format!("{group} ✕");
+            let name = truncate(&dep.name, width.saturating_sub(tail.chars().count() + 1));
+            let pad = width.saturating_sub(name.chars().count() + tail.chars().count());
+            let first = Line::from(vec![
+                Span::styled(name, Style::new().fg(SELECTED)),
+                Span::raw(" ".repeat(pad)),
+                Span::raw(tail),
+            ]);
+            let description = dep.description.as_deref().unwrap_or("");
+            let second = Line::styled(
+                format!("  {}", truncate(description, width.saturating_sub(2))),
+                Style::new().fg(WELL),
+            );
+            ListItem::new(vec![first, second])
+        })
+        .collect();
+    let highlight = if focused {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
+    };
+    let mut state = ListState::default().with_selected(Some(app.sel_cursor));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(highlight),
+        inner,
+        &mut state,
+    );
+}
+
+fn draw_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(picker) = &app.picker else {
+        return;
+    };
+    let width = (area.width * 4 / 5).max(20).min(area.width);
+    let height = (area.height * 4 / 5).max(6).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .title(" Add dependencies ")
+        .border_style(Style::new().fg(Color::Green));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [search_area, list_area, help_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(format!("Search: {}▏", picker.filter)),
+        search_area,
+    );
+    frame.render_widget(
+        Paragraph::new("Space toggle · Enter OK · Esc cancel").style(Style::new().fg(WELL)),
+        help_area,
+    );
 
     let width = list_area.width as usize;
+    let filtering = !picker.filter.is_empty();
     let mut items = Vec::new();
     let mut selected_row = None;
     let mut last_group = None;
     for (i, (group, dep, compatible)) in app.visible_dependencies().into_iter().enumerate() {
-        if filter.is_empty() && last_group != Some(group) {
+        if !filtering && last_group != Some(group) {
             items.push(ListItem::new(Line::styled(
                 group.to_string(),
                 Style::new().add_modifier(Modifier::BOLD).fg(Color::Yellow),
             )));
             last_group = Some(group);
         }
-        let mark = if app.is_selected(&dep.id) {
-            "[x]"
-        } else {
-            "[ ]"
+        let selected = app.is_selected(&dep.id);
+        let mark = if selected { "[x] " } else { "[ ] " };
+        let name_style = match (compatible, selected) {
+            (false, _) => Style::new().fg(WELL),
+            (true, true) => Style::new().fg(SELECTED),
+            (true, false) => Style::new(),
         };
-        let mut text = format!("{mark} {}", dep.name);
-        if !filter.is_empty() {
-            let pad = width.saturating_sub(text.chars().count() + group.chars().count());
-            text = format!("{text}{}{group}", " ".repeat(pad.max(1)));
+        let mut spans = vec![
+            Span::styled(mark, name_style),
+            Span::styled(dep.name.clone(), name_style),
+        ];
+        if filtering {
+            let used = mark.chars().count() + dep.name.chars().count();
+            let pad = width.saturating_sub(used + group.chars().count());
+            spans.push(Span::raw(" ".repeat(pad.max(1))));
+            spans.push(Span::styled(group.to_string(), Style::new().fg(WELL)));
         }
-        let style = if compatible {
-            Style::new()
-        } else {
-            Style::new().fg(Color::DarkGray)
-        };
-        if i == cursor_index {
+        if i == picker.cursor {
             selected_row = Some(items.len());
         }
-        items.push(ListItem::new(Line::styled(text, style)));
+        items.push(ListItem::new(Line::from(spans)));
     }
-    let highlight = if app.pane == Pane::Dependencies {
-        Style::new().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::new()
-    };
     let mut state = ListState::default().with_selected(selected_row);
     frame.render_stateful_widget(
-        List::new(items).highlight_style(highlight),
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         list_area,
         &mut state,
-    );
-
-    let selected = if app.req.dependencies.is_empty() {
-        "Selected: none".to_string()
-    } else {
-        format!("Selected: {}", app.req.dependencies.join(", "))
-    };
-    frame.render_widget(
-        Paragraph::new(selected).style(Style::new().fg(Color::Green)),
-        selected_area,
     );
 }
 
@@ -353,6 +434,115 @@ mod tests {
         let mut app = App::new(Mode::Connecting);
         app.on_event(Event::Online(metadata()));
         app.req.dependencies = vec!["web".into(), "lombok".into()];
+        insta::assert_snapshot!(render(&app, 100, 24).backend());
+    }
+
+    fn online_app(deps: &[&str]) -> App {
+        let mut app = App::new(Mode::Connecting);
+        app.on_event(Event::Online(metadata()));
+        app.req.dependencies = deps.iter().map(|d| d.to_string()).collect();
+        app
+    }
+
+    fn open_picker(app: &mut App, filter: &str, draft: &[&str]) {
+        app.picker = Some(crate::app::Picker {
+            draft: draft.iter().map(|d| d.to_string()).collect(),
+            filter: filter.into(),
+            cursor: 0,
+        });
+    }
+
+    /// Position of the first cell of `needle` in the rendered buffer.
+    fn find(terminal: &Terminal<TestBackend>, needle: &str) -> (u16, u16) {
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if let Some(byte) = row.find(needle) {
+                let x = row[..byte].chars().count() as u16;
+                return (x, y);
+            }
+        }
+        panic!("{needle} not on screen");
+    }
+
+    #[test]
+    fn main_pane_lists_selected_with_remove_marker() {
+        let screen = text(&render(&online_app(&["web", "lombok"]), 100, 24));
+        for expected in ["Spring Web", "Lombok", "✕", "Dependencies (2)"] {
+            assert!(screen.contains(expected), "{expected} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Spring Reactive Web"), "{screen}");
+    }
+
+    #[test]
+    fn main_pane_empty_message() {
+        let screen = text(&render(&online_app(&[]), 100, 24));
+        assert!(
+            screen.contains("No dependencies — press a to add"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn selected_name_is_light_blue() {
+        let terminal = render(&online_app(&["web"]), 100, 24);
+        let (x, y) = find(&terminal, "Spring Web");
+        assert_eq!(terminal.backend().buffer()[(x, y)].fg, Color::LightBlue);
+    }
+
+    #[test]
+    fn long_description_is_truncated() {
+        let terminal = render(&online_app(&["web"]), 100, 24);
+        let (_, y) = find(&terminal, "Spring Web");
+        let buf = terminal.backend().buffer();
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, y + 1)].symbol().to_string())
+            .collect();
+        assert!(row.trim_end().ends_with("…│"), "{row}");
+    }
+
+    #[test]
+    fn picker_modal_shows_search_and_list() {
+        let mut app = online_app(&[]);
+        open_picker(&mut app, "web", &[]);
+        let screen = text(&render(&app, 100, 24));
+        for expected in ["Add dependencies", "Search: web", "Esc cancel"] {
+            assert!(screen.contains(expected), "{expected} missing:\n{screen}");
+        }
+    }
+
+    #[test]
+    fn picker_selected_is_marked() {
+        let mut app = online_app(&[]);
+        open_picker(&mut app, "", &["web"]);
+        let screen = text(&render(&app, 100, 24));
+        assert!(screen.contains("[x] Spring Web"), "{screen}");
+    }
+
+    #[test]
+    fn empty_text_field_has_well() {
+        let mut app = online_app(&[]);
+        app.req.description.clear();
+        let terminal = render(&app, 100, 24);
+        let (x, y) = find(&terminal, "Description");
+        assert_eq!(terminal.backend().buffer()[(x + 14, y)].bg, Color::DarkGray);
+    }
+
+    #[test]
+    fn tiny_terminal_with_picker_does_not_panic() {
+        let mut app = online_app(&[]);
+        open_picker(&mut app, "", &[]);
+        let last = app.visible_dependencies().len() - 1;
+        app.picker.as_mut().expect("open").cursor = last;
+        render(&app, 40, 10);
+    }
+
+    #[test]
+    fn picker_snapshot() {
+        let mut app = online_app(&[]);
+        open_picker(&mut app, "sweb", &["web"]);
         insta::assert_snapshot!(render(&app, 100, 24).backend());
     }
 }
