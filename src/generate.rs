@@ -25,6 +25,23 @@ pub enum GenerateError {
     Offline(#[from] OfflineError),
     #[error("cannot write output: {0}")]
     Io(#[from] io::Error),
+    /// The service was unreachable and the offline fallback failed too.
+    #[error("No connection; {0}")]
+    AfterFallback(Box<GenerateError>),
+}
+
+/// A failed generation, as reported to the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub message: String,
+    /// The online request couldn't connect, so we tried (and failed) offline.
+    pub fell_back_offline: bool,
+}
+
+impl GenerateError {
+    pub fn fell_back_offline(&self) -> bool {
+        matches!(self, GenerateError::AfterFallback(_))
+    }
 }
 
 pub fn target_file(req: &ProjectRequest, ptype: &ProjectType) -> String {
@@ -51,7 +68,12 @@ pub fn run(
     }
     let mut fell_back_offline = false;
     if let Some(client) = client {
+        // A captive portal answers 200 with HTML; only a real zip counts as online success.
+        let is_project = ptype.tags.format == "project";
         match client.generate(&ptype.action, req) {
+            Ok(bytes) if is_project && !bytes.starts_with(b"PK\x03\x04") => {
+                fell_back_offline = true
+            }
             Ok(bytes) => {
                 write_new(&path, &bytes)?;
                 return Ok(Report {
@@ -64,6 +86,24 @@ pub fn run(
             Err(e) => return Err(e.into()),
         }
     }
+    let result = generate_offline(cache, req, ptype, &path);
+    match result {
+        Ok(warnings) => Ok(Report {
+            path,
+            warnings,
+            fell_back_offline,
+        }),
+        Err(e) if fell_back_offline => Err(GenerateError::AfterFallback(Box::new(e))),
+        Err(e) => Err(e),
+    }
+}
+
+fn generate_offline(
+    cache: &Cache,
+    req: &ProjectRequest,
+    ptype: &ProjectType,
+    path: &Path,
+) -> Result<Vec<String>, GenerateError> {
     let details = cache
         .load_dependencies(&req.boot_version)
         .ok_or_else(|| GenerateError::NoCachedDependencies(req.boot_version.clone()))?;
@@ -78,12 +118,8 @@ pub fn run(
             .map(|(_, bytes)| bytes)
             .unwrap_or_default()
     };
-    write_new(&path, &bytes)?;
-    Ok(Report {
-        path,
-        warnings: generated.warnings,
-        fell_back_offline,
-    })
+    write_new(path, &bytes)?;
+    Ok(generated.warnings)
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), GenerateError> {
@@ -148,13 +184,16 @@ mod tests {
         server
             .mock("GET", "/starter.zip")
             .match_query(mockito::Matcher::Any)
-            .with_body(b"PK-bytes")
+            .with_body(b"PK\x03\x04rest")
             .create();
         let client = Client::new(&server.url());
         let report = run(Some(&client), &cache, &req, &ptype, tmp.path()).expect("ok");
         assert_eq!(report.path, tmp.path().join("demo.zip"));
         assert!(!report.fell_back_offline);
-        assert_eq!(std::fs::read(&report.path).expect("written"), b"PK-bytes");
+        assert_eq!(
+            std::fs::read(&report.path).expect("written"),
+            b"PK\x03\x04rest"
+        );
     }
 
     #[test]
@@ -215,6 +254,34 @@ mod tests {
             std::fs::read_to_string(&report.path)
                 .expect("written")
                 .contains("<artifactId>spring-boot-starter</artifactId>")
+        );
+    }
+
+    #[test]
+    fn non_zip_response_falls_back_offline() {
+        let (tmp, cache, req, ptype) = setup("gradle-project");
+        cache.store_dependencies("4.2.0", DEPS).expect("seed");
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/starter.zip")
+            .match_query(mockito::Matcher::Any)
+            .with_body("<html>Sign in to the wifi</html>")
+            .create();
+        let client = Client::new(&server.url());
+        let report = run(Some(&client), &cache, &req, &ptype, tmp.path()).expect("ok");
+        assert!(report.fell_back_offline);
+        assert!(zip_names(&report.path).contains(&"demo/build.gradle".to_string()));
+    }
+
+    #[test]
+    fn failed_fallback_reports_no_connection() {
+        let (tmp, cache, req, ptype) = setup("gradle-project");
+        let client = Client::new("http://127.0.0.1:9");
+        let err = run(Some(&client), &cache, &req, &ptype, tmp.path()).expect_err("no cache");
+        assert!(err.fell_back_offline(), "{err:?}");
+        assert!(
+            err.to_string().contains("No cached dependency data"),
+            "{err}"
         );
     }
 }

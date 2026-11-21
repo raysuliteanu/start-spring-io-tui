@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use crate::api::Client;
 use crate::cache::Cache;
-use crate::generate::{self, Report};
+use crate::generate::{self, Failure, Report};
 use crate::model::{Metadata, ProjectRequest, ProjectType};
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ pub enum Event {
         cached_boots: Vec<String>,
     },
     DependenciesCached(String),
-    Generated(Result<Report, String>),
+    Generated(Result<Report, Failure>),
 }
 
 /// Runs blocking network/cache/disk work off the UI thread. The thread ends
@@ -83,8 +83,13 @@ pub fn spawn(
                 }
                 Job::Generate { req, ptype, online } => {
                     let client = client.as_ref().filter(|_| online);
-                    let result = generate::run(client, &cache, &req, &ptype, &out_dir)
-                        .map_err(|e| e.to_string());
+                    let result =
+                        generate::run(client, &cache, &req, &ptype, &out_dir).map_err(|e| {
+                            Failure {
+                                fell_back_offline: e.fell_back_offline(),
+                                message: e.to_string(),
+                            }
+                        });
                     event_tx.send(Event::Generated(result))
                 }
             };

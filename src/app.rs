@@ -5,7 +5,7 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::model::{Dependency, Metadata, ProjectRequest, derive_package_name};
+use crate::model::{Dependency, Metadata, ProjectRequest, derive_package_name, sanitize_package};
 use crate::version::in_range;
 use crate::worker::{Event, Job};
 
@@ -192,7 +192,15 @@ impl App {
                     self.status.push_str(&report.warnings.join("; "));
                 }
             }
-            Event::Generated(Err(e)) => self.status = e,
+            Event::Generated(Err(failure)) => {
+                if failure.fell_back_offline {
+                    self.mode = Mode::Offline {
+                        requested: false,
+                        cached_at: None,
+                    };
+                }
+                self.status = failure.message;
+            }
         }
         None
     }
@@ -267,6 +275,20 @@ impl App {
         }
         if self.req.artifact_id.trim().is_empty() {
             self.status = "Artifact is required".into();
+            return None;
+        }
+        // The artifact names the output file, so keep it a plain file name.
+        let artifact = &self.req.artifact_id;
+        if artifact.starts_with('.')
+            || !artifact
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            self.status = "Artifact may only use letters, digits, '.', '_' and '-'".into();
+            return None;
+        }
+        if sanitize_package(&self.req.package_name).is_empty() {
+            self.status = "Package name is required".into();
             return None;
         }
         let ptype = self
@@ -495,7 +517,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate::Report;
+    use crate::generate::{Failure, Report};
     use crate::model::tests::metadata;
     use std::path::PathBuf;
 
@@ -781,5 +803,34 @@ mod tests {
         });
         assert_eq!(app.mode_label(), "OFFLINE (no connection)");
         assert!(app.cached_boots.contains("4.2.0"));
+    }
+
+    #[test]
+    fn unsafe_artifact_refuses_generate() {
+        for bad in ["../x", "a/b", "/tmp/x", "a\\b", "my app", ".hidden"] {
+            let mut app = online_app();
+            app.req.artifact_id = bad.into();
+            assert!(app.on_key(ch('g')).is_none(), "{bad} accepted");
+            assert!(app.status.contains("Artifact"), "{bad}: {}", app.status);
+        }
+    }
+
+    #[test]
+    fn empty_package_refuses_generate() {
+        let mut app = online_app();
+        app.req.package_name = "---".into();
+        assert!(app.on_key(ch('g')).is_none());
+        assert!(app.status.contains("Package"), "{}", app.status);
+    }
+
+    #[test]
+    fn failed_fallback_sets_offline() {
+        let mut app = online_app();
+        app.on_event(Event::Generated(Err(Failure {
+            message: "No cached dependency data".into(),
+            fell_back_offline: true,
+        })));
+        assert_eq!(app.mode_label(), "OFFLINE (no connection)");
+        assert!(app.status.contains("No cached"), "{}", app.status);
     }
 }

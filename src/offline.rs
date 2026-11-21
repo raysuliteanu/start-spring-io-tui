@@ -4,7 +4,9 @@ use std::io::Write;
 use minijinja::{Environment, syntax::SyntaxConfig, value::Serde};
 use serde::Serialize;
 
-use crate::model::{Coordinates, DependencyDetails, ProjectRequest, ProjectType, Scope};
+use crate::model::{
+    Coordinates, DependencyDetails, ProjectRequest, ProjectType, Scope, sanitize_package,
+};
 
 // Versions the service doesn't report in /dependencies. Bump these to match
 // what start.spring.io generates (observed 2026-11-20).
@@ -467,9 +469,10 @@ pub fn generate(
         req.language.as_str()
     };
     let class_name = application_class_name(&req.name);
-    let pkg_dir = req.package_name.replace('.', "/");
+    let package = sanitize_package(&req.package_name);
+    let pkg_dir = package.replace('.', "/");
     let ctx = minijinja::context! {
-        package => &req.package_name,
+        package => &package,
         class_name => &class_name,
         name => &req.name,
         maven => ptype.tags.build == "maven",
@@ -806,5 +809,14 @@ mod tests {
                 .to_string();
             assert!(name.starts_with("demo/"), "{name}");
         }
+    }
+
+    #[test]
+    fn package_is_sanitized() {
+        let mut r = request("maven-project", "java", "jar", &[]);
+        r.package_name = "com.my-app.new".into();
+        let g = generate_project(&r);
+        let main = file(&g, "src/main/java/com/myapp/_new/DemoApplication.java");
+        assert!(main.starts_with("package com.myapp._new;"), "{main}");
     }
 }
