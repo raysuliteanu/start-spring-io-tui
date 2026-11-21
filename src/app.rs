@@ -147,18 +147,34 @@ impl App {
 
     fn set_metadata(&mut self, metadata: Metadata) {
         // Keep the user's selections when metadata arrives again (e.g. retry).
-        if self.metadata.is_none() {
+        let first = self.metadata.is_none();
+        if first {
             self.req = ProjectRequest::from_defaults(&metadata);
         }
         self.metadata = Some(metadata);
+        if !first {
+            // Newer metadata may have retired a dependency we had selected.
+            let unknown: Vec<String> = self
+                .req
+                .dependencies
+                .iter()
+                .filter(|id| self.find_dependency(id).is_none())
+                .cloned()
+                .collect();
+            if !unknown.is_empty() {
+                self.req.dependencies.retain(|id| !unknown.contains(id));
+                self.clamp_sel_cursor();
+                self.status = format!("Removed {} (no longer offered)", unknown.join(", "));
+            }
+        }
     }
 
     pub fn on_event(&mut self, ev: Event) -> Option<Job> {
         match ev {
             Event::Online(metadata) => {
                 self.mode = Mode::Online;
-                self.set_metadata(metadata);
                 self.status.clear();
+                self.set_metadata(metadata);
                 let boots = self
                     .boot_ids()
                     .into_iter()
@@ -1001,5 +1017,16 @@ mod tests {
         set_boot(&mut app, "4.2.0");
         assert_eq!(app.req.dependencies, ["web"]);
         assert_eq!(app.sel_cursor, 0);
+    }
+
+    #[test]
+    fn metadata_refresh_drops_unknown_selected_ids() {
+        let mut app = online_app();
+        app.req.dependencies = vec!["web".into(), "retired".into(), "lombok".into()];
+        app.sel_cursor = 2;
+        app.on_event(Event::Online(metadata()));
+        assert_eq!(app.req.dependencies, ["web", "lombok"]);
+        assert_eq!(app.sel_cursor, 1);
+        assert!(app.status.contains("retired"), "{}", app.status);
     }
 }

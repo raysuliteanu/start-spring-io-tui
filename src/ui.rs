@@ -123,7 +123,16 @@ fn draw_project(frame: &mut Frame, app: &App, metadata: &Metadata, area: Rect) {
                 return Line::from(vec![label, Span::styled(value, style)]);
             }
             // Text fields sit in a shaded "well" so empty ones are still visible.
-            let value: String = value.chars().take(well_width).collect();
+            let editing = selected && app.editing;
+            let len = value.chars().count();
+            let value: String = if len <= well_width {
+                value
+            } else if editing {
+                // Keep the end (and the cursor) in view while typing.
+                value.chars().skip(len - well_width).collect()
+            } else {
+                truncate(&value, well_width)
+            };
             let padded = format!("{value:<well_width$}");
             let edge = Style::new().fg(WELL);
             Line::from(vec![
@@ -544,5 +553,34 @@ mod tests {
         let mut app = online_app(&[]);
         open_picker(&mut app, "sweb", &["web"]);
         insta::assert_snapshot!(render(&app, 100, 24).backend());
+    }
+
+    fn package_row(app: &App, width: u16) -> String {
+        let terminal = render(app, width, 24);
+        let (_, y) = find(&terminal, "Package name");
+        let buf = terminal.backend().buffer();
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn long_text_value_is_marked_truncated() {
+        let mut app = online_app(&[]);
+        app.req.package_name = "com.example.averyveryverylongname".into();
+        let row = package_row(&app, 80);
+        assert!(row.contains("com.example.a"), "{row}");
+        assert!(row.contains("…▏"), "{row}");
+    }
+
+    #[test]
+    fn editing_long_value_shows_its_end_and_cursor() {
+        let mut app = online_app(&[]);
+        app.req.package_name = "com.example.averyveryverylongname".into();
+        app.pane = crate::app::Pane::Project;
+        app.field = crate::app::Field::Package;
+        app.editing = true;
+        let row = package_row(&app, 80);
+        assert!(row.contains("longname▏"), "{row}");
     }
 }
