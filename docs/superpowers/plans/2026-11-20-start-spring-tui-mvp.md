@@ -6,7 +6,7 @@
 
 **Architecture:** Single binary crate. Pure modules (model, version, offline generator, app state) are unit-tested; a worker thread runs blocking HTTP/cache/disk work and talks to the UI loop over `mpsc` channels; ratatui renders `App` state.
 
-**Tech Stack:** Rust (pinned via `rust-toolchain.toml`), ratatui + crossterm, reqwest (blocking, rustls), serde/serde_json, minijinja, zip, dirs, clap (derive), thiserror, vergen-gix. Dev: mockito, tempfile, assert_cmd.
+**Tech Stack:** Rust (pinned via `rust-toolchain.toml`), ratatui + crossterm, reqwest (blocking, rustls), serde/serde_json, minijinja, zip, nucleo-matcher, dirs, clap (derive), thiserror, vergen-gix. Dev: mockito, tempfile, assert_cmd.
 
 **Spec:** `docs/superpowers/specs/2026-11-20-start-spring-tui-design.md`
 
@@ -214,16 +214,19 @@ Rules (spec "Builder's calls"): add `spring-boot-starter` if no selected coordin
   - `enum Pane { Project, Dependencies }`; `enum Field { Project, Language, Boot, Java, Packaging, Group, Artifact, Name, Description, Package }` (this order)
   - `App::new(mode: Mode) -> App`; pub fields `mode, metadata: Option<Metadata>, req: ProjectRequest, pane, field, editing: bool, filter: String, filtering: bool, dep_cursor: usize, cached_boots: BTreeSet<String>, status: String, show_about: bool, quit: bool`
   - `App::on_key(&mut self, key: KeyEvent) -> Option<Job>`, `App::on_event(&mut self, ev: Event) -> Option<Job>`
-  - `App::mode_label(&self) -> String`, `App::visible_dependencies(&self) -> Vec<(&str, &Dependency, bool)>` (group name, dep, compatible)
+  - `App::mode_label(&self) -> String`, `App::visible_dependencies(&self) -> Vec<(&str, &Dependency, bool)>` (group name, dep, compatible) — grouped metadata order when `filter` is empty, else fuzzy matches (nucleo-matcher, haystack `"{name} {id} {group}"`, smart case) sorted by descending score
 
-Keys: Tab switches pane; ↑/↓ moves field or dep cursor; ←/→ cycles single-select values; Enter toggles text editing (typing edits, Backspace deletes, Enter/Esc ends); `/` starts filter (typing filters, Esc clears and ends, Enter ends); Space toggles the dep under the cursor if compatible; `g` → `Job::Generate`; `r` → `Job::LoadMetadata` only in `Offline { requested: false }`; `?` toggles About; `q` and Ctrl-C set `quit`. While editing or filtering, letters are text, not commands.
+Keys: Tab switches pane; ↑/↓ moves field or dep cursor; ←/→ cycles single-select values; Enter toggles text editing (typing edits, Backspace deletes, Enter/Esc ends); `/` starts filter (typing filters, Esc clears and ends, Enter ends); Space toggles the dep under the cursor if compatible; `X` (Dependencies pane, not filtering) clears all selected deps; `g` → `Job::Generate`; `r` → `Job::LoadMetadata` only in `Offline { requested: false }`; `?` toggles About; `q` and Ctrl-C set `quit`. While editing or filtering, letters are text, not commands.
 
 - [ ] **Step 1: Failing tests:**
   - `labels`: `Online → "ONLINE"`, `Offline{requested:true} → "OFFLINE"`, `Offline{requested:false} → "OFFLINE (no connection)"`, `Connecting → "Connecting…"`.
   - `online_event_prefetches_release_boots`: `on_event(Online(fixture))` returns `FetchDependencies` with no `SNAPSHOT` versions and including `"4.2.0"`.
   - `package_follows_artifact_until_edited`: editing artifact to `myapp` → package `com.example.myapp`, name `myapp`; after editing package to `x.y`, editing artifact leaves package `x.y`.
   - `incompatible_dep_cannot_be_toggled` and `boot_change_drops_incompatible`: with a dep whose range excludes the boot, Space does nothing; switching boot to an excluding version removes a selected dep and `status` names it.
-  - `filter_matches_name_id_description_case_insensitive`: filter `"WEB"` includes `web`.
+  - `fuzzy_filter_ranks_best_first`: filter `"sweb"` → first result id `web`.
+  - `fuzzy_filter_matches_category`: filter `"ai"` includes every dep of the `AI` group.
+  - `empty_filter_is_grouped`: `visible_dependencies()` order equals metadata group order.
+  - `clear_all_deps`: with `["web","lombok"]` selected, `X` in Dependencies pane → `req.dependencies` empty.
   - `empty_artifact_refuses_generate`: artifact `""` → `g` returns `None`, `status` non-empty.
   - `retry_only_when_degraded`: `r` returns `Some(LoadMetadata)` for `Offline{requested:false}`, `None` for `requested:true`.
   - `q_while_editing_is_text`: editing Group, typing `q` appends to group, `quit == false`.
@@ -241,7 +244,7 @@ Keys: Tab switches pane; ↑/↓ moves field or dep cursor; ←/→ cycles singl
 - Consumes: `App`, `worker::spawn`, `Cache`, `Client`, `cli::Args`, `cli::version_info`.
 - Produces: `ui::draw(frame: &mut Frame, app: &App)`.
 
-Layout per spec sketch: left "Project" pane (fields, `◂ value ▸` for selects; in offline mode Boot values in `cached_boots` show ` (cached)`), right "Dependencies (/ to search)" pane (grouped, `[x]`/`[ ]`, incompatible dimmed, "Selected: …" line), one-line status bar: `{mode_label}[ · cache {age} old] · {status or key help}`. `?` shows a centered About popup with all `VersionInfo` fields. No cache in offline → centered message `No cached options — run once while online` and only `q` works.
+Layout per spec sketch: left "Project" pane (fields, `◂ value ▸` for selects; in offline mode Boot values in `cached_boots` show ` (cached)`), right "Dependencies (/ to search)" pane (grouped with group headers when filter empty; flat with category in a right-aligned column when filtering; `[x]`/`[ ]`, incompatible dimmed, "Selected: …" line), one-line status bar: `{mode_label}[ · cache {age} old] · {status or key help}`. `?` shows a centered About popup with all `VersionInfo` fields. No cache in offline → centered message `No cached options — run once while online` and only `q` works.
 
 - [ ] **Step 1: Failing tests** (ratatui `TestBackend`):
   - `status_bar_shows_mode`: 80×24, `Offline{requested:true}` → buffer contains `OFFLINE` and not `no connection`.

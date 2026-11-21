@@ -142,8 +142,12 @@ Two panes plus a status bar, modeled on the website:
   invalid identifier characters removed) until the user edits it
   directly — same behaviour as the website. Name defaults to artifact id
   the same way.
-- Dependencies pane: grouped list; `/` filters by name/id/description
-  (case-insensitive substring); Space toggles. Dependencies whose
+- Dependencies pane: grouped list; `/` starts a fuzzy search (via
+  `nucleo-matcher`) over each dependency's name, id and category name, so
+  typing `ai` also finds the AI group. While the query is non-empty the
+  list is flat, best match first, with the category in a side column;
+  an empty query returns to the grouped view. Space toggles; `X` clears
+  all selected dependencies. Dependencies whose
   `versionRange` excludes the selected Boot version are shown dimmed and
   cannot be selected; if a Boot version change makes a selected one
   incompatible, it is deselected and the status bar says so.
@@ -275,4 +279,6 @@ About popup shows the same fields.
 Wrapper files (copied from a cached online zip), `HELP.md`, `.gitattributes`,
 Explore (preview files before writing), download-and-extract (e.g. `G`),
 choose download location, Share link,
-pre-filling selections from CLI flags.
+pre-filling selections from CLI flags, favorite dependencies (persisted,
+shown as a group at the top), remembering last selections, open in IDE /
+post-generate command (after extract exists).
