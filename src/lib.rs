@@ -5,5 +5,6 @@ pub mod cli;
 pub mod generate;
 pub mod model;
 pub mod offline;
+pub mod ui;
 pub mod version;
 pub mod worker;

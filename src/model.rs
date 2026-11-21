@@ -154,7 +154,12 @@ impl ProjectRequest {
             group_id: m.group_id.default.clone(),
             artifact_id: m.artifact_id.default.clone(),
             version: m.version.default.clone(),
-            name: m.name.default.clone(),
+            // The service gives no name default; the website uses the artifact id.
+            name: if m.name.default.is_empty() {
+                m.artifact_id.default.clone()
+            } else {
+                m.name.default.clone()
+            },
             description: m.description.default.clone(),
             package_name: m.package_name.default.clone(),
             dependencies: Vec::new(),
@@ -260,6 +265,10 @@ pub(crate) mod tests {
         assert_eq!(r.group_id, "com.example");
         assert_eq!(r.artifact_id, "demo");
         assert_eq!(r.package_name, "com.example.demo");
+        assert_eq!(
+            r.name, "demo",
+            "name falls back to artifact id like the website"
+        );
     }
 
     #[test]
