@@ -76,6 +76,14 @@ impl Field {
     }
 }
 
+/// The Add-dependencies modal. Edits a draft so Esc can discard changes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Picker {
+    pub draft: Vec<String>,
+    pub filter: String,
+    pub cursor: usize,
+}
+
 #[derive(Debug)]
 pub struct App {
     pub mode: Mode,
@@ -84,9 +92,9 @@ pub struct App {
     pub pane: Pane,
     pub field: Field,
     pub editing: bool,
-    pub filter: String,
-    pub filtering: bool,
-    pub dep_cursor: usize,
+    pub picker: Option<Picker>,
+    /// Cursor over the selected dependencies in the main pane.
+    pub sel_cursor: usize,
     pub cached_boots: BTreeSet<String>,
     pub status: String,
     pub show_about: bool,
@@ -104,9 +112,8 @@ impl App {
             pane: Pane::Project,
             field: Field::Project,
             editing: false,
-            filter: String::new(),
-            filtering: false,
-            dep_cursor: 0,
+            picker: None,
+            sel_cursor: 0,
             cached_boots: BTreeSet::new(),
             status: String::new(),
             show_about: false,
@@ -220,8 +227,8 @@ impl App {
             self.edit_key(key.code);
             return None;
         }
-        if self.filtering {
-            self.filter_key(key.code);
+        if self.picker.is_some() {
+            self.picker_key(key.code);
             return None;
         }
         if self.show_about {
@@ -240,10 +247,8 @@ impl App {
                     Pane::Dependencies => Pane::Project,
                 }
             }
-            KeyCode::Char('/') => {
-                self.pane = Pane::Dependencies;
-                self.filtering = true;
-            }
+            KeyCode::Char('a' | '/') => self.open_picker(),
+            KeyCode::Enter if self.pane == Pane::Dependencies => self.open_picker(),
             KeyCode::Char('g') => return self.generate(),
             KeyCode::Char('r') if self.degraded() => {
                 self.mode = Mode::Connecting;
@@ -371,6 +376,7 @@ impl App {
             .cloned()
             .collect();
         self.req.dependencies.retain(|id| !removed.contains(id));
+        self.clamp_sel_cursor();
         self.status = if removed.is_empty() {
             String::new()
         } else {
@@ -384,12 +390,8 @@ impl App {
     }
 
     fn is_compatible(&self, id: &str) -> bool {
-        self.metadata
-            .iter()
-            .flat_map(|m| &m.dependencies.values)
-            .flat_map(|g| &g.values)
-            .find(|d| d.id == id)
-            .is_some_and(|d| self.dep_compatible(d))
+        self.find_dependency(id)
+            .is_some_and(|(_, d)| self.dep_compatible(d))
     }
 
     fn dep_compatible(&self, d: &Dependency) -> bool {
@@ -438,53 +440,117 @@ impl App {
         }
     }
 
-    fn filter_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char(c) => self.filter.push(c),
-            KeyCode::Backspace => {
-                self.filter.pop();
-            }
-            KeyCode::Esc => {
-                self.filter.clear();
-                self.filtering = false;
-            }
-            KeyCode::Enter => self.filtering = false,
-            _ => return,
-        }
-        self.dep_cursor = 0;
+    fn open_picker(&mut self) {
+        self.pane = Pane::Dependencies;
+        self.picker = Some(Picker {
+            draft: self.req.dependencies.clone(),
+            ..Picker::default()
+        });
     }
 
-    fn dependencies_key(&mut self, code: KeyCode) {
+    fn picker_key(&mut self, code: KeyCode) {
         let len = self.visible_dependencies().len();
+        let toggled = match code {
+            KeyCode::Char(' ') => self.picker_toggle_target(),
+            _ => None,
+        };
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
         match code {
-            KeyCode::Up => self.dep_cursor = self.dep_cursor.saturating_sub(1),
-            KeyCode::Down => self.dep_cursor = (self.dep_cursor + 1).min(len.saturating_sub(1)),
-            KeyCode::Char('X') => {
-                self.req.dependencies.clear();
-                self.status = "Cleared all dependencies".into();
+            KeyCode::Enter => {
+                self.req.dependencies = picker.draft.clone();
+                self.picker = None;
+                self.clamp_sel_cursor();
             }
-            KeyCode::Char(' ') => {
-                let Some((_, dep, compatible)) =
-                    self.visible_dependencies().get(self.dep_cursor).cloned()
-                else {
-                    return;
-                };
-                if !compatible {
-                    self.status = format!(
-                        "{} is not compatible with Boot {}",
-                        dep.name, self.req.boot_version
-                    );
-                    return;
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Up => picker.cursor = picker.cursor.saturating_sub(1),
+            KeyCode::Down => picker.cursor = (picker.cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Char(' ') => match toggled {
+                Some(Ok(id)) => {
+                    if let Some(pos) = picker.draft.iter().position(|d| *d == id) {
+                        picker.draft.remove(pos);
+                    } else {
+                        picker.draft.push(id);
+                    }
                 }
-                let id = dep.id.clone();
-                if let Some(pos) = self.req.dependencies.iter().position(|d| *d == id) {
-                    self.req.dependencies.remove(pos);
-                } else {
-                    self.req.dependencies.push(id);
-                }
+                Some(Err(message)) => self.status = message,
+                None => {}
+            },
+            KeyCode::Char(c) => {
+                picker.filter.push(c);
+                picker.cursor = 0;
+            }
+            KeyCode::Backspace => {
+                picker.filter.pop();
+                picker.cursor = 0;
             }
             _ => {}
         }
+    }
+
+    /// The id under the picker cursor, or why it can't be selected.
+    fn picker_toggle_target(&self) -> Option<Result<String, String>> {
+        let cursor = self.picker.as_ref()?.cursor;
+        let (_, dep, compatible) = self.visible_dependencies().get(cursor).cloned()?;
+        Some(if compatible {
+            Ok(dep.id.clone())
+        } else {
+            Err(format!(
+                "{} is not compatible with Boot {}",
+                dep.name, self.req.boot_version
+            ))
+        })
+    }
+
+    fn clamp_sel_cursor(&mut self) {
+        self.sel_cursor = self
+            .sel_cursor
+            .min(self.req.dependencies.len().saturating_sub(1));
+    }
+
+    fn dependencies_key(&mut self, code: KeyCode) {
+        let len = self.req.dependencies.len();
+        match code {
+            KeyCode::Up => self.sel_cursor = self.sel_cursor.saturating_sub(1),
+            KeyCode::Down => self.sel_cursor = (self.sel_cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Char('X') => {
+                self.req.dependencies.clear();
+                self.sel_cursor = 0;
+                self.status = "Cleared all dependencies".into();
+            }
+            KeyCode::Char('d') | KeyCode::Delete if self.sel_cursor < len => {
+                self.req.dependencies.remove(self.sel_cursor);
+                self.clamp_sel_cursor();
+            }
+            _ => {}
+        }
+    }
+
+    fn find_dependency(&self, id: &str) -> Option<(&str, &Dependency)> {
+        self.metadata
+            .iter()
+            .flat_map(|m| &m.dependencies.values)
+            .flat_map(|g| g.values.iter().map(move |d| (g.name.as_str(), d)))
+            .find(|(_, d)| d.id == id)
+    }
+
+    /// (group name, dependency) for each selected id, in selection order.
+    pub fn selected_dependencies(&self) -> Vec<(&str, &Dependency)> {
+        self.req
+            .dependencies
+            .iter()
+            .filter_map(|id| self.find_dependency(id))
+            .collect()
+    }
+
+    /// Selection as shown: the picker's draft while it is open.
+    pub fn is_selected(&self, id: &str) -> bool {
+        let selected = match &self.picker {
+            Some(p) => &p.draft,
+            None => &self.req.dependencies,
+        };
+        selected.iter().any(|d| d == id)
     }
 
     /// (group name, dependency, compatible with the selected Boot version)
@@ -495,10 +561,11 @@ impl App {
             .flat_map(|m| &m.dependencies.values)
             .flat_map(|g| g.values.iter().map(move |d| (g.name.as_str(), d)))
             .map(|(g, d)| (g, d, self.dep_compatible(d)));
-        if self.filter.is_empty() {
+        let filter = self.picker.as_ref().map_or("", |p| p.filter.as_str());
+        if filter.is_empty() {
             return all.collect();
         }
-        let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
+        let pattern = Pattern::parse(filter, CaseMatching::Smart, Normalization::Smart);
         let mut matcher = Matcher::new(Config::DEFAULT);
         let mut buf = Vec::new();
         let mut scored: Vec<_> = all
@@ -557,13 +624,25 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
     }
 
+    /// Opens the picker (if needed) and moves its cursor to `id`.
     fn cursor_to(app: &mut App, id: &str) {
-        app.pane = Pane::Dependencies;
-        app.dep_cursor = app
+        if app.picker.is_none() {
+            app.on_key(ch('a'));
+        }
+        let pos = app
             .visible_dependencies()
             .iter()
             .position(|(_, d, _)| d.id == id)
             .expect("dependency visible");
+        app.picker.as_mut().expect("picker open").cursor = pos;
+    }
+
+    fn picker(filter: &str, draft: &[&str]) -> Option<Picker> {
+        Some(Picker {
+            draft: draft.iter().map(|d| d.to_string()).collect(),
+            filter: filter.into(),
+            cursor: 0,
+        })
     }
 
     fn set_boot(app: &mut App, boot: &str) -> Option<Job> {
@@ -623,7 +702,7 @@ mod tests {
         let mut app = online_app();
         cursor_to(&mut app, "vaadin");
         app.on_key(ch(' '));
-        assert!(app.req.dependencies.is_empty());
+        assert!(app.picker.as_ref().expect("open").draft.is_empty());
     }
 
     #[test]
@@ -632,6 +711,7 @@ mod tests {
         set_boot(&mut app, "4.1.3");
         cursor_to(&mut app, "vaadin");
         app.on_key(ch(' '));
+        app.on_key(key(KeyCode::Enter));
         assert_eq!(app.req.dependencies, ["vaadin"]);
         set_boot(&mut app, "4.2.0");
         assert!(app.req.dependencies.is_empty());
@@ -659,7 +739,7 @@ mod tests {
     #[test]
     fn fuzzy_filter_matches_category() {
         let mut app = online_app();
-        app.filter = "ai".into();
+        app.picker = picker("ai", &[]);
         let visible: Vec<&str> = app
             .visible_dependencies()
             .iter()
@@ -701,18 +781,6 @@ mod tests {
         app.pane = Pane::Dependencies;
         app.on_key(ch('X'));
         assert!(app.req.dependencies.is_empty());
-    }
-
-    #[test]
-    fn filter_typing_is_text_and_esc_clears() {
-        let mut app = online_app();
-        app.on_key(ch('/'));
-        type_text(&mut app, "qgX");
-        assert_eq!(app.filter, "qgX");
-        assert!(!app.quit);
-        app.on_key(key(KeyCode::Esc));
-        assert!(app.filter.is_empty());
-        assert!(!app.filtering);
     }
 
     #[test]
@@ -832,5 +900,106 @@ mod tests {
         })));
         assert_eq!(app.mode_label(), "OFFLINE (no connection)");
         assert!(app.status.contains("No cached"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_opens_picker_with_current_selection() {
+        let mut app = online_app();
+        app.req.dependencies = vec!["web".into()];
+        app.on_key(ch('a'));
+        let p = app.picker.as_ref().expect("picker open");
+        assert_eq!(p.draft, ["web"]);
+        assert!(p.filter.is_empty());
+        assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn slash_and_enter_open_picker() {
+        let mut app = online_app();
+        app.on_key(ch('/'));
+        assert!(app.picker.is_some());
+        let mut app = online_app();
+        app.pane = Pane::Dependencies;
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.picker.is_some());
+    }
+
+    #[test]
+    fn picker_typing_is_search() {
+        let mut app = online_app();
+        app.on_key(ch('a'));
+        type_text(&mut app, "qgXad");
+        assert_eq!(app.picker.as_ref().expect("open").filter, "qgXad");
+        assert!(!app.quit);
+        assert!(app.req.dependencies.is_empty());
+    }
+
+    #[test]
+    fn picker_space_toggles_draft_only() {
+        let mut app = online_app();
+        cursor_to(&mut app, "web");
+        app.on_key(ch(' '));
+        assert_eq!(app.picker.as_ref().expect("open").draft, ["web"]);
+        assert!(app.req.dependencies.is_empty());
+    }
+
+    #[test]
+    fn picker_enter_commits() {
+        let mut app = online_app();
+        cursor_to(&mut app, "web");
+        app.on_key(ch(' '));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.req.dependencies, ["web"]);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn picker_esc_discards() {
+        let mut app = online_app();
+        app.req.dependencies = vec!["lombok".into()];
+        cursor_to(&mut app, "web");
+        app.on_key(ch(' '));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.req.dependencies, ["lombok"]);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn d_removes_highlighted_and_clamps() {
+        let mut app = online_app();
+        app.req.dependencies = vec!["web".into(), "lombok".into(), "devtools".into()];
+        app.pane = Pane::Dependencies;
+        app.sel_cursor = 2;
+        app.on_key(ch('d'));
+        assert_eq!(app.req.dependencies, ["web", "lombok"]);
+        assert_eq!(app.sel_cursor, 1);
+        app.on_key(key(KeyCode::Delete));
+        app.on_key(key(KeyCode::Delete));
+        assert!(app.req.dependencies.is_empty());
+        assert_eq!(app.sel_cursor, 0);
+        app.on_key(ch('d'));
+    }
+
+    #[test]
+    fn selected_dependencies_in_selection_order() {
+        let mut app = online_app();
+        app.req.dependencies = vec!["lombok".into(), "web".into()];
+        let selected: Vec<(&str, &str)> = app
+            .selected_dependencies()
+            .iter()
+            .map(|(g, d)| (*g, d.id.as_str()))
+            .collect();
+        assert_eq!(selected, [("Developer Tools", "lombok"), ("Web", "web")]);
+    }
+
+    #[test]
+    fn boot_change_clamps_sel_cursor() {
+        let mut app = online_app();
+        set_boot(&mut app, "4.1.3");
+        app.req.dependencies = vec!["web".into(), "vaadin".into()];
+        app.sel_cursor = 1;
+        set_boot(&mut app, "4.2.0");
+        assert_eq!(app.req.dependencies, ["web"]);
+        assert_eq!(app.sel_cursor, 0);
     }
 }

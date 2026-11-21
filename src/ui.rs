@@ -124,9 +124,10 @@ fn draw_project(frame: &mut Frame, app: &App, metadata: &Metadata, area: Rect) {
 }
 
 fn draw_dependencies(frame: &mut Frame, app: &App, area: Rect) {
-    let title = if app.filtering || !app.filter.is_empty() {
-        let cursor = if app.filtering { "▏" } else { "" };
-        format!(" Search: {}{cursor} ", app.filter)
+    let filter = app.picker.as_ref().map_or("", |p| p.filter.as_str());
+    let cursor_index = app.picker.as_ref().map_or(0, |p| p.cursor);
+    let title = if app.picker.is_some() {
+        format!(" Search: {filter}▏ ")
     } else {
         " Dependencies (/ to search) ".into()
     };
@@ -141,20 +142,20 @@ fn draw_dependencies(frame: &mut Frame, app: &App, area: Rect) {
     let mut selected_row = None;
     let mut last_group = None;
     for (i, (group, dep, compatible)) in app.visible_dependencies().into_iter().enumerate() {
-        if app.filter.is_empty() && last_group != Some(group) {
+        if filter.is_empty() && last_group != Some(group) {
             items.push(ListItem::new(Line::styled(
                 group.to_string(),
                 Style::new().add_modifier(Modifier::BOLD).fg(Color::Yellow),
             )));
             last_group = Some(group);
         }
-        let mark = if app.req.dependencies.contains(&dep.id) {
+        let mark = if app.is_selected(&dep.id) {
             "[x]"
         } else {
             "[ ]"
         };
         let mut text = format!("{mark} {}", dep.name);
-        if !app.filter.is_empty() {
+        if !filter.is_empty() {
             let pad = width.saturating_sub(text.chars().count() + group.chars().count());
             text = format!("{text}{}{group}", " ".repeat(pad.max(1)));
         }
@@ -163,7 +164,7 @@ fn draw_dependencies(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::new().fg(Color::DarkGray)
         };
-        if i == app.dep_cursor {
+        if i == cursor_index {
             selected_row = Some(items.len());
         }
         items.push(ListItem::new(Line::styled(text, style)));
@@ -311,7 +312,11 @@ mod tests {
     #[test]
     fn tiny_terminal_does_not_panic() {
         let mut app = offline_app(true);
-        app.dep_cursor = app.visible_dependencies().len() - 1;
+        app.on_key(ratatui::crossterm::event::KeyEvent::from(
+            ratatui::crossterm::event::KeyCode::Char('a'),
+        ));
+        let last = app.visible_dependencies().len() - 1;
+        app.picker.as_mut().expect("open").cursor = last;
         app.pane = crate::app::Pane::Dependencies;
         render(&app, 40, 10);
     }
@@ -319,7 +324,10 @@ mod tests {
     #[test]
     fn filtered_list_shows_category() {
         let mut app = offline_app(true);
-        app.filter = "sweb".into();
+        app.picker = Some(crate::app::Picker {
+            filter: "sweb".into(),
+            ..Default::default()
+        });
         let screen = text(&render(&app, 100, 24));
         assert!(screen.contains("Spring Web"), "{screen}");
         assert!(screen.contains("Web"), "{screen}");
