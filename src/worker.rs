@@ -26,6 +26,8 @@ pub enum Event {
     Offline {
         metadata: Option<Metadata>,
         cached_at: Option<SystemTime>,
+        /// Boot versions with cached dependency details (offline-generatable).
+        cached_boots: Vec<String>,
     },
     DependenciesCached(String),
     Generated(Result<Report, String>),
@@ -53,7 +55,14 @@ pub fn spawn(
                         }
                         None => {
                             let cached = cache.load_metadata();
+                            let cached_boots = cached
+                                .iter()
+                                .flat_map(|(m, _)| &m.boot_version.values)
+                                .filter(|b| cache.has_dependencies(&b.id))
+                                .map(|b| b.id.clone())
+                                .collect();
                             event_tx.send(Event::Offline {
+                                cached_boots,
                                 cached_at: cached.as_ref().map(|(_, t)| *t),
                                 metadata: cached.map(|(m, _)| m),
                             })
@@ -128,6 +137,7 @@ mod tests {
             Event::Offline {
                 metadata: Some(_),
                 cached_at: Some(_),
+                ..
             } => {}
             other => panic!("unexpected {other:?}"),
         }
