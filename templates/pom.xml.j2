@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>{{ boot_version }}</version>
+		<relativePath/> <!-- lookup parent from repository -->
+	</parent>
+	<groupId>{{ group_id }}</groupId>
+	<artifactId>{{ artifact_id }}</artifactId>
+	<version>{{ version }}</version>
+{% if war %}
+	<packaging>war</packaging>
+{% endif %}
+	<name>{{ name }}</name>
+	<description>{{ description }}</description>
+	<properties>
+		<java.version>{{ java_version }}</java.version>
+{% if kotlin %}
+		<kotlin.version>{{ kotlin_version }}</kotlin.version>
+{% endif %}
+{% for bom in boms %}
+		<{{ bom.maven_property }}>{{ bom.version }}</{{ bom.maven_property }}>
+{% endfor %}
+	</properties>
+	<dependencies>
+{% for dep in maven_deps %}
+		<dependency>
+			<groupId>{{ dep.group_id }}</groupId>
+			<artifactId>{{ dep.artifact_id }}</artifactId>
+{% if dep.version %}
+			<version>{{ dep.version }}</version>
+{% endif %}
+{% if dep.scope %}
+			<scope>{{ dep.scope }}</scope>
+{% endif %}
+{% if dep.optional %}
+			<optional>true</optional>
+{% endif %}
+		</dependency>
+{% endfor %}
+	</dependencies>
+{% if boms %}
+	<dependencyManagement>
+		<dependencies>
+{% for bom in boms %}
+			<dependency>
+				<groupId>{{ bom.group_id }}</groupId>
+				<artifactId>{{ bom.artifact_id }}</artifactId>
+				<version>${{ '{' }}{{ bom.maven_property }}}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+{% endfor %}
+		</dependencies>
+	</dependencyManagement>
+{% endif %}
+
+	<build>
+{% if kotlin %}
+		<sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+		<testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
+{% endif %}
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+{% if processor_paths %}
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<annotationProcessorPaths>
+{% for path in processor_paths %}
+						<path>
+							<groupId>{{ path.group_id }}</groupId>
+							<artifactId>{{ path.artifact_id }}</artifactId>
+						</path>
+{% endfor %}
+					</annotationProcessorPaths>
+				</configuration>
+			</plugin>
+{% endif %}
+{% if kotlin %}
+			<plugin>
+				<groupId>org.jetbrains.kotlin</groupId>
+				<artifactId>kotlin-maven-plugin</artifactId>
+				<configuration>
+					<args>
+						<arg>-Xjsr305=strict</arg>
+					</args>
+					<compilerPlugins>
+						<plugin>spring</plugin>
+{% if kotlin_jpa %}
+						<plugin>jpa</plugin>
+						<plugin>all-open</plugin>
+{% endif %}
+					</compilerPlugins>
+{% if kotlin_jpa %}
+					<pluginOptions>
+						<option>all-open:annotation=jakarta.persistence.Entity</option>
+						<option>all-open:annotation=jakarta.persistence.MappedSuperclass</option>
+						<option>all-open:annotation=jakarta.persistence.Embeddable</option>
+					</pluginOptions>
+{% endif %}
+				</configuration>
+				<dependencies>
+					<dependency>
+						<groupId>org.jetbrains.kotlin</groupId>
+						<artifactId>kotlin-maven-allopen</artifactId>
+						<version>${kotlin.version}</version>
+					</dependency>
+{% if kotlin_jpa %}
+					<dependency>
+						<groupId>org.jetbrains.kotlin</groupId>
+						<artifactId>kotlin-maven-noarg</artifactId>
+						<version>${kotlin.version}</version>
+					</dependency>
+{% endif %}
+				</dependencies>
+			</plugin>
+{% endif %}
+{% if groovy %}
+			<plugin>
+				<groupId>org.codehaus.gmavenplus</groupId>
+				<artifactId>gmavenplus-plugin</artifactId>
+				<version>{{ gmavenplus_version }}</version>
+				<executions>
+					<execution>
+						<goals>
+							<goal>addSources</goal>
+							<goal>addTestSources</goal>
+							<goal>generateStubs</goal>
+							<goal>compile</goal>
+							<goal>generateTestStubs</goal>
+							<goal>compileTests</goal>
+							<goal>removeStubs</goal>
+							<goal>removeTestStubs</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+{% endif %}
+		</plugins>
+	</build>
+{% if repositories %}
+	<repositories>
+{% for repo in repositories %}
+		<repository>
+			<id>{{ repo.id }}</id>
+			<name>{{ repo.name }}</name>
+			<url>{{ repo.url }}</url>
+{% if not repo.snapshots %}
+			<snapshots>
+				<enabled>false</enabled>
+			</snapshots>
+{% endif %}
+		</repository>
+{% endfor %}
+	</repositories>
+{% endif %}
+
+</project>

@@ -1,0 +1,81 @@
+plugins {
+{% if kotlin %}
+	id 'org.jetbrains.kotlin.jvm' version '{{ kotlin_version }}'
+	id 'org.jetbrains.kotlin.plugin.spring' version '{{ kotlin_version }}'
+{% elif groovy %}
+	id 'groovy'
+{% else %}
+	id 'java'
+{% endif %}
+{% if war %}
+	id 'war'
+{% endif %}
+	id 'org.springframework.boot' version '{{ boot_version }}'
+	id 'io.spring.dependency-management' version '{{ dm_version }}'
+{% if kotlin_jpa %}
+	id 'org.jetbrains.kotlin.plugin.jpa' version '{{ kotlin_version }}'
+{% endif %}
+}
+
+group = {{ group_id | groovy_str }}
+version = {{ version | groovy_str }}
+{% if description %}
+description = {{ description | groovy_str }}
+{% endif %}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of({{ java_version }})
+	}
+}
+
+repositories {
+	mavenCentral()
+{% for repo in repositories %}
+	maven { url = {{ repo.url | groovy_str }} }
+{% endfor %}
+}
+{% if boms %}
+
+ext {
+{% for bom in boms %}
+	set('{{ bom.gradle_property }}', "{{ bom.version }}")
+{% endfor %}
+}
+{% endif %}
+
+dependencies {
+{% for dep in gradle_deps %}
+	{{ dep.config }} {{ dep.coord | groovy_str }}
+{% endfor %}
+}
+{% if boms %}
+
+dependencyManagement {
+	imports {
+{% for bom in boms %}
+		mavenBom "{{ bom.group_id }}:{{ bom.artifact_id }}:${{ '{' }}{{ bom.gradle_property }}}"
+{% endfor %}
+	}
+}
+{% endif %}
+{% if kotlin %}
+
+kotlin {
+	compilerOptions {
+		freeCompilerArgs.addAll '-Xjsr305=strict'
+	}
+}
+{% endif %}
+{% if kotlin_jpa %}
+
+allOpen {
+	annotation 'jakarta.persistence.Entity'
+	annotation 'jakarta.persistence.MappedSuperclass'
+	annotation 'jakarta.persistence.Embeddable'
+}
+{% endif %}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
