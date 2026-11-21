@@ -282,3 +282,5 @@ choose download location, Share link,
 pre-filling selections from CLI flags, favorite dependencies (persisted,
 shown as a group at the top), remembering last selections, open in IDE /
 post-generate command (after extract exists).
+Minimum terminal size: decide the smallest usable size and show a
+"terminal too small" message below it (MVP only guarantees no crash).
