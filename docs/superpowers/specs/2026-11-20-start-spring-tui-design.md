@@ -56,7 +56,12 @@ improvement. It must also keep working without network (e.g. on a plane).
     `/build.gradle`) and `tags` (build, dialect, format).
   - Generation: `GET {action}?type=…&language=…&bootVersion=…&groupId=…
     &artifactId=…&name=…&description=…&packageName=…&packaging=…
-    &javaVersion=…&version=…&dependencies=a,b,c`.
+    &javaVersion=…&version=…&baseDir=…&dependencies=a,b,c`. Without
+    `baseDir` the zip has no top-level directory; the website passes
+    `baseDir=<artifactId>`, and so do we.
+  - There are five project types: `gradle-project`, `gradle-project-kotlin`,
+    `maven-project` (zip) and `gradle-build` (`/build.gradle`, Groovy DSL),
+    `maven-build` (`/pom.xml`). There is no Kotlin-DSL build-only type.
 
 ## Approaches considered
 
@@ -151,8 +156,8 @@ Output goes to the current directory (where the TUI was started), as a
 download — nothing is extracted, mirroring the website's browser download:
 
 - project types: `./<artifactId>.zip` (the zip contains an
-  `<artifactId>/` top-level directory, as the service's does);
-- build-only types: `./pom.xml` / `./build.gradle` / `./build.gradle.kts`.
+  `<artifactId>/` top-level directory, via `baseDir`);
+- build-only types: `./pom.xml` / `./build.gradle`.
 
 The target file must not already exist — otherwise error, nothing
 written. Result and path shown in the status bar.
@@ -254,7 +259,10 @@ About popup shows the same fields.
 - A small rule table in `offline.rs` covers the well-known special cases:
   devtools / docker-compose → `developmentOnly` (Gradle) / optional
   (Maven); lombok → `compileOnly` + `annotationProcessor`;
-  Kotlin + web → `jackson-module-kotlin`.
+  Kotlin + web → `jackson-module-kotlin`; Maven + any `annotationProcessor`
+  dependency → `maven-compiler-plugin` `annotationProcessorPaths` (needed
+  from Java 23 on, where implicit annotation processing is off);
+  Kotlin + data-jpa → Kotlin JPA / all-open plugin config.
 - No local Maven/Gradle version detection: README states the minimum
   Gradle/Maven versions for the Boot versions in use.
 - After degrading to offline (not forced), `r` retries the connection;
